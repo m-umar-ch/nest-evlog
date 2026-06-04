@@ -55,6 +55,28 @@ describe('GraphQL API (e2e)', () => {
       });
   });
 
+  it('checkout rejects invalid input (Joi pipe)', () => {
+    return gql(app.getHttpServer())
+      .send({
+        query: `
+          mutation {
+            checkout(input: {
+              userId: ""
+              items: []
+              card: { last4: "ab", brand: "", expiryMonth: 0, expiryYear: 0 }
+            }) {
+              orderId
+            }
+          }
+        `,
+      })
+      .expect(200)
+      .expect((res) => {
+        expect(res.body.errors).toBeDefined();
+        expect(res.body.errors[0].extensions.why).toBeTruthy();
+      });
+  });
+
   it('checkout mutation', () => {
     return gql(app.getHttpServer())
       .send({

@@ -1,10 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { captureProducerWideEvent, QUEUES } from '@nest-evlog/queues';
 import { useLogger } from 'evlog/nestjs';
-import {
-  assertNonEmpty,
-  assertPositive,
-} from '../common/helpers/validation.helper';
 import type { LineItem } from '../inventory/inventory.service';
 import { InventoryService } from '../inventory/inventory.service';
 import { CheckoutJobsService } from '../jobs/checkout-jobs.service';
@@ -29,8 +25,6 @@ export class CheckoutService {
 
   async processCheckout(dto: CheckoutDto): Promise<CheckoutResult> {
     const log = useLogger();
-
-    this.validateCheckoutDto(dto);
 
     log.set({
       checkout: {
@@ -88,7 +82,9 @@ export class CheckoutService {
         path: '/graphql',
       });
 
-      log.set({ graphql: { operation: 'checkout', phase: 'enqueue_post_checkout' } });
+      log.set({
+        graphql: { operation: 'checkout', phase: 'enqueue_post_checkout' },
+      });
 
       const asyncJob = await this.checkoutJobsService.enqueuePostCheckout({
         orderId: order.id,
@@ -134,25 +130,6 @@ export class CheckoutService {
       }
       throw error;
     }
-  }
-
-  private validateCheckoutDto(dto: CheckoutDto): void {
-    assertNonEmpty(dto.userId, 'userId');
-
-    if (!dto.items?.length) {
-      useLogger().set({ checkout: { validationFailed: 'empty_items' } });
-      assertPositive(0, 'items');
-    }
-
-    for (const item of dto.items) {
-      assertNonEmpty(item.sku, 'sku');
-      assertPositive(item.quantity, 'quantity');
-    }
-
-    assertNonEmpty(dto.card?.last4, 'card.last4');
-    assertNonEmpty(dto.card?.brand, 'card.brand');
-    assertPositive(dto.card?.expiryMonth, 'card.expiryMonth');
-    assertPositive(dto.card?.expiryYear, 'card.expiryYear');
   }
 
   private normalizeLineItems(items: CheckoutDto['items']): LineItem[] {

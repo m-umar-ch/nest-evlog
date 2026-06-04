@@ -4,3 +4,4 @@
 - clock/worker use `createLogger` through `@nest-evlog/job-logging` (`runWithJobLogger`); api/clock HTTP use `useLogger()` from `evlog/nestjs`
 - API enqueues `post-checkout` jobs with `captureProducerWideEvent()`; worker merges via `buildJobLoggerInitialContext()` into `parentEvent` + `_parentRequestId`
 - `apps/api` is code-first GraphQL (`@nestjs/graphql`, resolvers in `*.resolver.ts`); REST controllers removed. Schema: `apps/api/src/schema.gql`
+- Request validation uses **Joi** via `JoiValidationPipe` on GraphQL `@Args` (`common/validation/joi-validation.pipe.ts`); failures throw `createError` (400) for the GraphQL exception filter
