@@ -1,0 +1,2 @@
+- main purpose of this application it to implement a wide-event logging implementation with evlog (https://www.evlog.dev/integrate/frameworks/nestjs)
+- in this application various nested functions will be created like a service will inject another service and in a function it will call various other helper function and show how we can emit a single wide-event with evlog even for complex scenerios like that
