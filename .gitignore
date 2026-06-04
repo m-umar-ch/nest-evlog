@@ -6,6 +6,7 @@ node_modules/
 dist/
 build/
 *.tsbuildinfo
+apps/api/src/schema.gql
 
 # Package managers
 .pnpm-store/

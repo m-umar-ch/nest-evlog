@@ -3,3 +3,4 @@
 - monorepo with three apps: `apps/api` (HTTP), `apps/clock` (crons + BullMQ producer), `apps/worker` (BullMQ consumer) — not microservices, shared Redis queues via `libs/queues`
 - clock/worker use `createLogger` through `@nest-evlog/job-logging` (`runWithJobLogger`); api/clock HTTP use `useLogger()` from `evlog/nestjs`
 - API enqueues `post-checkout` jobs with `captureProducerWideEvent()`; worker merges via `buildJobLoggerInitialContext()` into `parentEvent` + `_parentRequestId`
+- `apps/api` is code-first GraphQL (`@nestjs/graphql`, resolvers in `*.resolver.ts`); REST controllers removed. Schema: `apps/api/src/schema.gql`

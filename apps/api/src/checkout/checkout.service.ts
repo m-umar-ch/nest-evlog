@@ -85,8 +85,10 @@ export class CheckoutService {
       const producer = captureProducerWideEvent(log, {
         service: 'nest-evlog-api',
         method: 'POST',
-        path: '/checkout',
+        path: '/graphql',
       });
+
+      log.set({ graphql: { operation: 'checkout', phase: 'enqueue_post_checkout' } });
 
       const asyncJob = await this.checkoutJobsService.enqueuePostCheckout({
         orderId: order.id,

@@ -34,7 +34,7 @@ Watch each terminal for wide events tagged by service name.
 
 | App | Default port | evlog `service` | Responsibility |
 |-----|----------------|-----------------|----------------|
-| **api** | 3000 | `nest-evlog-api` | E-commerce checkout API |
+| **api** | 3000 | `nest-evlog-api` | GraphQL API (code-first) + checkout |
 | **clock** | 3002 | `nest-evlog-clock` | Crons + BullMQ enqueue (producer) |
 | **worker** | 3003 | `nest-evlog-worker` | BullMQ job processors (consumer) |
 
@@ -86,7 +86,7 @@ INFO [nest-evlog-worker] job.order_sync       correlationId=corr_abc …
 
 The worker runs in a **separate process**, so it cannot call `useLogger()` from the API request. Instead, the API **snapshots** the in-flight wide event at enqueue time and stores it on the BullMQ job:
 
-1. During `POST /checkout`, services call `useLogger().set()` (user, checkout, order, payment, …).
+1. During the `checkout` mutation, services call `useLogger().set()` (user, checkout, order, payment, …).
 2. Before enqueue, `captureProducerWideEvent(log, { service: 'nest-evlog-api', … })` calls `log.getContext()` and copies fields into `job.data.producer`.
 3. The worker starts its job logger with `buildJobLoggerInitialContext()`, which sets:
    - `_parentRequestId` — same correlation field evlog uses for `log.fork()` children
@@ -97,7 +97,7 @@ The worker runs in a **separate process**, so it cannot call `useLogger()` from 
 
 | # | Service | Event | Notes |
 |---|---------|-------|-------|
-| 1 | `nest-evlog-api` | `POST /checkout` | HTTP request completes |
+| 1 | `nest-evlog-api` | `POST /graphql` (`checkout`) | HTTP request completes |
 | 2 | `nest-evlog-api` | `enqueue_post_checkout` | Optional `log.fork()` child on API |
 | 3 | `nest-evlog-worker` | `job.post_checkout` | Includes `parentEvent` from API |
 
@@ -129,20 +129,24 @@ docker-compose.yml     # Redis
 | `order-sync` | Every 1 min | `OrderSyncProcessor` |
 | `inventory-alert` | Every 2 min | `InventoryAlertProcessor` |
 | `notification-dispatch` | Every 5 min | `NotificationDispatchProcessor` |
-| `post-checkout` | **API** after `POST /checkout` | `PostCheckoutProcessor` (includes API `parentEvent`) |
+| `post-checkout` | **API** after `checkout` mutation | `PostCheckoutProcessor` (includes API `parentEvent`) |
 
 Clock registers queues and **adds** jobs. API only enqueues `post-checkout`. Worker registers the same queues and **processes** jobs. Connection via `REDIS_HOST` / `REDIS_PORT` or `REDIS_URL`.
 
 ## API reference
 
-### api — `localhost:3000`
+### api — GraphQL at `http://localhost:3000/graphql`
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/health` | Health (excluded from evlog) |
-| `GET` | `/users/:id` | User lookup |
-| `POST` | `/checkout` | Full checkout pipeline |
-| `GET` | `/orders/:id` | Order by ID (after checkout) |
+Code-first schema (`@nestjs/graphql` + Apollo). Playground: **http://localhost:3000/graphql** (GraphiQL).
+
+| Operation | Type | Description |
+|-----------|------|-------------|
+| `health` | Query | `{ health { status } }` |
+| `user(id)` | Query | User by ID |
+| `order(id)` | Query | Order by ID (after checkout) |
+| `checkout(input)` | Mutation | Full checkout pipeline + post-checkout job |
+
+Auto-generated schema file: `apps/api/src/schema.gql` (on build/start).
 
 **Sample users:** `usr_alice` (pro), `usr_bob` (free), `usr_carol` (enterprise)
 
@@ -152,7 +156,7 @@ Clock registers queues and **adds** jobs. API only enqueues `post-checkout`. Wor
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/health` | Health (excluded from evlog) |
+| `GET` | `/health` | Health |
 | `POST` | `/trigger/order-sync` | Enqueue order-sync job |
 | `POST` | `/trigger/inventory-alert` | Enqueue inventory alert |
 | `POST` | `/trigger/notification` | Enqueue notification |
@@ -165,63 +169,51 @@ Optional body field: `"fail": "enqueue" | "worker"` (see [Simulated failures](#s
 |--------|------|-------------|
 | `GET` | `/health` | Health only — jobs run via BullMQ |
 
-## Testing with curl
+## Testing
 
-### api
+### api — GraphQL (curl)
 
 ```bash
-curl -s http://localhost:3000/health
-curl -s http://localhost:3000/users/usr_alice
+# Health
+curl -s -X POST http://localhost:3000/graphql \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"{ health { status } }"}'
 
-# Success — HTTP wide event + post-checkout job (worker logs include parentEvent from API)
-# Requires: worker + Redis running. Response includes asyncJob.correlationId.
-curl -s -X POST http://localhost:3000/checkout \
+# User
+curl -s -X POST http://localhost:3000/graphql \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"{ user(id: \"usr_alice\") { id name plan loyaltyPoints } }"}'
+
+# Checkout — wide event on POST /graphql + post-checkout job (needs worker + Redis)
+curl -s -X POST http://localhost:3000/graphql \
   -H 'Content-Type: application/json' \
   -d '{
-    "userId": "usr_alice",
-    "items": [
-      { "sku": "sku_keyboard", "quantity": 1 },
-      { "sku": "sku_headset", "quantity": 1 }
-    ],
-    "card": { "last4": "4242", "brand": "visa", "expiryMonth": 12, "expiryYear": 2030 }
+    "query": "mutation($input: CheckoutInput!) { checkout(input: $input) { orderId transactionId totalCents asyncJob { correlationId queue } } }",
+    "variables": {
+      "input": {
+        "userId": "usr_alice",
+        "items": [
+          { "sku": "sku_keyboard", "quantity": 1 },
+          { "sku": "sku_headset", "quantity": 1 }
+        ],
+        "card": { "last4": "4242", "brand": "visa", "expiryMonth": 12, "expiryYear": 2030 }
+      }
+    }
   }'
 
-# 409 — out of stock (error on same wide event)
-curl -s -X POST http://localhost:3000/checkout \
+# Order lookup (use orderId from checkout response)
+curl -s -X POST http://localhost:3000/graphql \
   -H 'Content-Type: application/json' \
-  -d '{
-    "userId": "usr_bob",
-    "items": [{ "sku": "sku_webcam", "quantity": 1 }],
-    "card": { "last4": "4242", "brand": "visa", "expiryMonth": 12, "expiryYear": 2030 }
-  }'
-
-# 402 — payment declined (last4: 0000)
-curl -s -X POST http://localhost:3000/checkout \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "userId": "usr_alice",
-    "items": [{ "sku": "sku_keyboard", "quantity": 1 }],
-    "card": { "last4": "0000", "brand": "visa", "expiryMonth": 12, "expiryYear": 2030 }
-  }'
+  -d '{"query":"{ order(id: \"ord_REPLACE\") { id status totalCents } }"}'
 ```
 
 ### api + worker (checkout → post-checkout job)
 
-Start **worker** and **Redis** before API checkout:
-
-```bash
-pnpm run start:worker
-pnpm run start:api
-curl -s -X POST http://localhost:3000/checkout -H 'Content-Type: application/json' -d '{
-  "userId": "usr_alice",
-  "items": [{ "sku": "sku_keyboard", "quantity": 1 }],
-  "card": { "last4": "4242", "brand": "visa", "expiryMonth": 12, "expiryYear": 2030 }
-}'
-```
+Start **worker** and **Redis** before running the checkout mutation above.
 
 **Expected logs:**
 
-1. **API** — `POST /checkout 201` with full checkout context
+1. **API** — `POST /graphql` with `graphql.operation=checkout` and full checkout `parentEvent` fields
 2. **API** — optional child `enqueue_post_checkout` (`log.fork`)
 3. **Worker** — `job.post_checkout` with `_parentRequestId`, `parentEvent` (user, checkout, order, pricing, …)
 

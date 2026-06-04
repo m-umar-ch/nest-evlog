@@ -3,5 +3,6 @@ packages:
   - 'libs/*'
 
 allowBuilds:
+  '@apollo/protobufjs': true
   '@nestjs/core': true
   unrs-resolver: true

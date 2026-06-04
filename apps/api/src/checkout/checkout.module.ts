@@ -6,7 +6,7 @@ import { OrdersModule } from '../orders/orders.module';
 import { PaymentsModule } from '../payments/payments.module';
 import { PricingModule } from '../pricing/pricing.module';
 import { UsersModule } from '../users/users.module';
-import { CheckoutController } from './checkout.controller';
+import { CheckoutResolver } from './checkout.resolver';
 import { CheckoutService } from './checkout.service';
 
 @Module({
@@ -19,7 +19,6 @@ import { CheckoutService } from './checkout.service';
     NotificationsModule,
     JobsModule,
   ],
-  controllers: [CheckoutController],
-  providers: [CheckoutService],
+  providers: [CheckoutService, CheckoutResolver],
 })
 export class CheckoutModule {}

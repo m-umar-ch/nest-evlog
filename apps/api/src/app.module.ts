@@ -1,19 +1,17 @@
 import { Module } from '@nestjs/common';
 import { EvlogModule } from 'evlog/nestjs';
 import { CheckoutModule } from './checkout/checkout.module';
-import { HealthController } from './health.controller';
+import { GraphqlModule } from './graphql/graphql.module';
 import { OrdersModule } from './orders/orders.module';
 import { UsersModule } from './users/users.module';
 
 @Module({
   imports: [
-    EvlogModule.forRoot({
-      exclude: ['/health'],
-    }),
+    EvlogModule.forRoot(),
+    GraphqlModule,
     UsersModule,
     OrdersModule,
     CheckoutModule,
   ],
-  controllers: [HealthController],
 })
 export class AppModule {}
