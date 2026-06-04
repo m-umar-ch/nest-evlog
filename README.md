@@ -2,7 +2,7 @@
 
 A **pnpm / yarn monorepo** that demonstrates [evlog](https://www.evlog.dev) **wide-event logging** in realistic NestJS setups:
 
-- **HTTP requests** with deeply nested services and helpers (`api`)
+- **GraphQL requests** with deeply nested services and helpers (`api`)
 - **Cron + queue producers** without HTTP request scope (`clock`)
 - **Background job consumers** (`worker`)
 
@@ -48,12 +48,12 @@ PORT=3001 pnpm run start:api    # override any app port
 
 | Unit of work | App | Mechanism |
 |--------------|-----|-----------|
-| HTTP request | api, clock | `EvlogModule` + `useLogger().set()` |
+| HTTP / GraphQL request | api, clock | `EvlogModule` + `useLogger().set()` |
 | Cron tick | clock | `runWithJobLogger()` → `createLogger()` |
 | Enqueue operation | clock | `runWithJobLogger()` (nested under cron or HTTP) |
 | BullMQ job | worker | `runWithJobLogger()` per `process()` call |
 
-### HTTP (api + clock triggers)
+### HTTP / GraphQL (api + clock triggers)
 
 ```typescript
 const log = useLogger();
@@ -61,7 +61,7 @@ log.set({ checkout: { userId: 'usr_alice' } });
 // … nested services also call useLogger() — same event
 ```
 
-Emitted when the HTTP response finishes (or on error via `EvlogExceptionFilter`).
+Emitted when the request finishes (or on error via `EvlogGraphqlExceptionFilter` on api, `EvlogExceptionFilter` on clock).
 
 ### Background (clock crons, worker jobs)
 
@@ -82,26 +82,47 @@ INFO [nest-evlog-clock]  enqueue.order_sync   correlationId=corr_abc …
 INFO [nest-evlog-worker] job.order_sync       correlationId=corr_abc …
 ```
 
-### Passing API wide-event context to the worker
+### Passing API context to the worker (`job.data.producer`)
 
-The worker runs in a **separate process**, so it cannot call `useLogger()` from the API request. Instead, the API **snapshots** the in-flight wide event at enqueue time and stores it on the BullMQ job:
+The worker runs in a **separate process** and cannot see the API’s `useLogger()` scope. Parent data is a **snapshot written to Redis** when the job is enqueued:
 
-1. During the `checkout` mutation, services call `useLogger().set()` (user, checkout, order, payment, …).
-2. Before enqueue, `captureProducerWideEvent(log, { service: 'nest-evlog-api', … })` calls `log.getContext()` and copies fields into `job.data.producer`.
-3. The worker starts its job logger with `buildJobLoggerInitialContext()`, which sets:
-   - `_parentRequestId` — same correlation field evlog uses for `log.fork()` children
-   - `producer` — metadata (service, method, path)
-   - `parentEvent` — full API context snapshot (user, checkout, order, pricing, …)
+1. During `checkout`, nested services call `useLogger().set()` (user, checkout, pricing, …) on one in-memory wide event.
+2. Before `queue.add`, `captureProducerWideEvent(log, …)` calls `log.getContext()` and builds a `ProducerWideEventContext` (`requestId`, `service`, `method`, `path`, `context`, `capturedAt`).
+3. That object is stored on the BullMQ payload as **`job.data.producer`** (JSON in **Redis**).
+4. When the worker runs, it reads `job.data.producer` and merges it via `buildJobLoggerInitialContext()`:
+   - `_parentRequestId` → producer’s `requestId`
+   - `producer` → `{ service, method, path, capturedAt }`
+   - `parentEvent` → full `producer.context` snapshot from enqueue time
+
+Nothing is streamed after enqueue: fields added to the API logger **after** capture are not on the worker event.
+
+Clock HTTP triggers use the same pattern (`captureProducerWideEvent` → optional `producer` on job payloads).
+
+### `log.fork()` on the API (same process only)
+
+`log.fork(label, fn)` is **not** how the worker gets data. It creates a **second** wide event on the API, still in-process:
+
+| Field (auto) | Meaning |
+|--------------|---------|
+| `operation` | Your label, e.g. `enqueue_post_checkout` |
+| `_parentRequestId` | Parent request’s `requestId` |
+| `requestId` | **New** id for the child event |
+| `method` / `path` | Copied from parent |
+
+Inside `fn`, `useLogger().set()` adds only what you set (e.g. `asyncJob`, `queue`). The child does **not** automatically include the full checkout context — unlike `job.data.producer.context` on the worker.
+
+| Mechanism | Cross-process? | Carries full parent context? |
+|-----------|----------------|------------------------------|
+| `job.data.producer` | Yes (via Redis) | Yes → `parentEvent` on worker |
+| `log.fork()` | No (API only) | No — only `operation` + `_parentRequestId` + your `set()` |
 
 **Three related wide events** for one checkout:
 
 | # | Service | Event | Notes |
 |---|---------|-------|-------|
-| 1 | `nest-evlog-api` | `POST /graphql` (`checkout`) | HTTP request completes |
-| 2 | `nest-evlog-api` | `enqueue_post_checkout` | Optional `log.fork()` child on API |
-| 3 | `nest-evlog-worker` | `job.post_checkout` | Includes `parentEvent` from API |
-
-Clock HTTP triggers use the same pattern (`captureProducerWideEvent` on `/trigger/*`).
+| 1 | `nest-evlog-api` | GraphQL `checkout` | Main request wide event |
+| 2 | `nest-evlog-api` | `enqueue_post_checkout` | Optional `log.fork()` child |
+| 3 | `nest-evlog-worker` | `job.post_checkout` | `parentEvent` from `job.data.producer` |
 
 Docs: [NestJS integration](https://www.evlog.dev/integrate/frameworks/nestjs) · [Wide events](https://www.evlog.dev/learn/wide-events)
 
@@ -109,11 +130,11 @@ Docs: [NestJS integration](https://www.evlog.dev/integrate/frameworks/nestjs) ·
 
 ```
 apps/
-  api/                 # Checkout API (nested modules + helpers)
+  api/                 # GraphQL checkout API (resolvers + nested services)
   clock/               # @nestjs/schedule + BullMQ producer
   worker/              # BullMQ processors
 libs/
-  queues/              # Queue names, payloads, Redis config, failure helpers
+  queues/              # Queue names, payloads, Redis, captureProducerWideEvent, buildJobLoggerInitialContext
   job-logging/         # runWithJobLogger(), setJobStep()
 scripts/
   build-libs.cjs       # Compiles libs before clock/worker start
@@ -147,6 +168,8 @@ Code-first schema (`@nestjs/graphql` + Apollo). Playground: **http://localhost:3
 | `checkout(input)` | Mutation | Full checkout pipeline + post-checkout job |
 
 Auto-generated schema file: `apps/api/src/schema.gql` (on build/start).
+
+**Validation:** GraphQL types enforce shape; business rules use **Joi** via `JoiValidationPipe` on `@Args('input', …)` (see `checkout.resolver.ts`, `checkout.schema.ts`). Failures throw `createError` (400) and surface as GraphQL errors with `extensions.why` / `extensions.fix`.
 
 **Sample users:** `usr_alice` (pro), `usr_bob` (free), `usr_carol` (enterprise)
 
@@ -205,6 +228,11 @@ curl -s -X POST http://localhost:3000/graphql \
 curl -s -X POST http://localhost:3000/graphql \
   -H 'Content-Type: application/json' \
   -d '{"query":"{ order(id: \"ord_REPLACE\") { id status totalCents } }"}'
+
+# Invalid checkout — Joi pipe returns errors[].extensions.why
+curl -s -X POST http://localhost:3000/graphql \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"mutation { checkout(input: { userId: \"\", items: [], card: { last4: \"ab\", brand: \"\", expiryMonth: 0, expiryYear: 0 } }) { orderId } }"}'
 ```
 
 ### api + worker (checkout → post-checkout job)
@@ -213,9 +241,9 @@ Start **worker** and **Redis** before running the checkout mutation above.
 
 **Expected logs:**
 
-1. **API** — `POST /graphql` with `graphql.operation=checkout` and full checkout `parentEvent` fields
-2. **API** — optional child `enqueue_post_checkout` (`log.fork`)
-3. **Worker** — `job.post_checkout` with `_parentRequestId`, `parentEvent` (user, checkout, order, pricing, …)
+1. **API** — GraphQL `checkout` with `graphql.operation=checkout` and accumulated checkout fields
+2. **API** — optional child `enqueue_post_checkout` (`log.fork`, `asyncJob`, `queue`)
+3. **Worker** — `job.post_checkout` with `_parentRequestId` and `parentEvent` (snapshot from `job.data.producer` in Redis)
 
 ### clock + worker (happy path)
 
@@ -308,17 +336,18 @@ Implementation: `libs/queues` (`assertEnqueueShouldSucceed`, `assertWorkerShould
 ## api architecture
 
 ```
-CheckoutController
+CheckoutResolver          JoiValidationPipe(checkoutDtoSchema) on input
   └── CheckoutService
         ├── UsersService
         ├── InventoryService      (+ stock.helper.ts)
         ├── PricingService        (+ discount.helper.ts)
         ├── PaymentsService       (+ card.helper.ts)
         ├── OrdersService         (+ order-status.helper.ts)
-        └── NotificationsService  (+ template.helper.ts)
+        ├── NotificationsService  (+ template.helper.ts)
+        └── CheckoutJobsService   → BullMQ post-checkout (job.data.producer)
 ```
 
-Each layer calls `useLogger().set()` — one wide event per `POST /checkout`.
+Each layer calls `useLogger().set()` — one wide event per GraphQL `checkout` mutation (plus optional `log.fork` child for enqueue).
 
 ## Environment variables
 
@@ -364,6 +393,14 @@ Caused by old `paths` aliases emitting `dist/apps/clock/src/main.js`. Current `t
 ### No wide events
 
 Ensure you're watching the **process terminal** (not curl output). Each app calls `initLogger()` in `main.ts` with its own `service` name.
+
+### `pnpm install` / build fails on `@apollo/protobufjs`
+
+Approve native builds in `pnpm-workspace.yaml` (`allowBuilds: '@apollo/protobufjs': true`) or run `pnpm approve-builds`, then `pnpm install` again.
+
+### GraphQL / Apollo startup
+
+API requires `@as-integrations/express5` (Express 5 + Apollo). Install deps from repo root after pulling.
 
 ## Resources
 
