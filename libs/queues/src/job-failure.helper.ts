@@ -10,6 +10,7 @@ export interface JobFailureContext {
   failureMode?: JobFailureMode;
   userId?: string;
   sku?: string;
+  orderId?: string;
 }
 
 export function resolveFailureMode(

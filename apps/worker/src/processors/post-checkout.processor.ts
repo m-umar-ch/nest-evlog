@@ -4,21 +4,21 @@ import { runWithJobLogger } from '@nest-evlog/job-logging';
 import {
   buildJobLoggerInitialContext,
   QUEUES,
-  type InventoryAlertJobPayload,
+  type PostCheckoutJobPayload,
 } from '@nest-evlog/queues';
-import { processInventoryAlert } from './helpers/inventory.helper';
+import { fulfillPostCheckout } from './helpers/post-checkout.helper';
 
-@Processor(QUEUES.INVENTORY_ALERT)
-export class InventoryAlertProcessor extends WorkerHost {
-  async process(job: Job<InventoryAlertJobPayload>) {
+@Processor(QUEUES.POST_CHECKOUT)
+export class PostCheckoutProcessor extends WorkerHost {
+  async process(job: Job<PostCheckoutJobPayload>) {
     return runWithJobLogger(
       buildJobLoggerInitialContext(
         {
           app: 'worker',
-          operation: 'job.inventory_alert',
+          operation: 'job.post_checkout',
           correlationId: job.data.correlationId,
           jobId: job.id,
-          queue: QUEUES.INVENTORY_ALERT,
+          queue: QUEUES.POST_CHECKOUT,
           attempt: job.attemptsMade + 1,
         },
         job.data.producer,
@@ -28,12 +28,12 @@ export class InventoryAlertProcessor extends WorkerHost {
           job: {
             name: job.name,
             source: job.data.source,
-            sku: job.data.sku,
-            failureMode: job.data.failureMode ?? 'none',
+            orderId: job.data.orderId,
+            userId: job.data.userId,
           },
         });
 
-        const result = await processInventoryAlert(job.data, log);
+        const result = await fulfillPostCheckout(job.data, log);
         log.set({ result });
         return result;
       },

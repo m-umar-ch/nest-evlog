@@ -24,4 +24,9 @@ export interface CheckoutResult {
     channel: string;
     delivered: boolean;
   };
+  asyncJob: {
+    correlationId: string;
+    jobId: string | undefined;
+    queue: string;
+  };
 }

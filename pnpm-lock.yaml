@@ -38,6 +38,12 @@ importers:
 
   apps/api:
     dependencies:
+      '@nest-evlog/queues':
+        specifier: workspace:*
+        version: link:../../libs/queues
+      '@nestjs/bullmq':
+        specifier: ^11.0.2
+        version: 11.0.4(@nestjs/common@11.1.24(reflect-metadata@0.2.2)(rxjs@7.8.2))(@nestjs/core@11.1.24)(bullmq@5.78.0)
       '@nestjs/common':
         specifier: ^11.0.1
         version: 11.1.24(reflect-metadata@0.2.2)(rxjs@7.8.2)
@@ -47,6 +53,9 @@ importers:
       '@nestjs/platform-express':
         specifier: ^11.0.1
         version: 11.1.24(@nestjs/common@11.1.24(reflect-metadata@0.2.2)(rxjs@7.8.2))(@nestjs/core@11.1.24)
+      bullmq:
+        specifier: ^5.40.0
+        version: 5.78.0
       evlog:
         specifier: ^2.18.1
         version: 2.18.1(@nestjs/common@11.1.24(reflect-metadata@0.2.2)(rxjs@7.8.2))(express@5.2.1)

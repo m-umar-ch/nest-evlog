@@ -6,15 +6,21 @@
   "scripts": {
     "build": "nest build",
     "start": "nest start",
+    "prebuild": "node ../../scripts/build-libs.cjs",
+    "prestart": "node ../../scripts/build-libs.cjs",
+    "prestart:dev": "node ../../scripts/build-libs.cjs",
     "start:dev": "nest start --watch",
     "start:prod": "node dist/main",
     "test": "jest",
     "test:e2e": "jest --config ./test/jest-e2e.json"
   },
   "dependencies": {
+    "@nest-evlog/queues": "workspace:*",
+    "@nestjs/bullmq": "^11.0.2",
     "@nestjs/common": "^11.0.1",
     "@nestjs/core": "^11.0.1",
     "@nestjs/platform-express": "^11.0.1",
+    "bullmq": "^5.40.0",
     "evlog": "^2.18.1",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1"

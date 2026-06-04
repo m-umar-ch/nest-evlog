@@ -82,6 +82,27 @@ INFO [nest-evlog-clock]  enqueue.order_sync   correlationId=corr_abc …
 INFO [nest-evlog-worker] job.order_sync       correlationId=corr_abc …
 ```
 
+### Passing API wide-event context to the worker
+
+The worker runs in a **separate process**, so it cannot call `useLogger()` from the API request. Instead, the API **snapshots** the in-flight wide event at enqueue time and stores it on the BullMQ job:
+
+1. During `POST /checkout`, services call `useLogger().set()` (user, checkout, order, payment, …).
+2. Before enqueue, `captureProducerWideEvent(log, { service: 'nest-evlog-api', … })` calls `log.getContext()` and copies fields into `job.data.producer`.
+3. The worker starts its job logger with `buildJobLoggerInitialContext()`, which sets:
+   - `_parentRequestId` — same correlation field evlog uses for `log.fork()` children
+   - `producer` — metadata (service, method, path)
+   - `parentEvent` — full API context snapshot (user, checkout, order, pricing, …)
+
+**Three related wide events** for one checkout:
+
+| # | Service | Event | Notes |
+|---|---------|-------|-------|
+| 1 | `nest-evlog-api` | `POST /checkout` | HTTP request completes |
+| 2 | `nest-evlog-api` | `enqueue_post_checkout` | Optional `log.fork()` child on API |
+| 3 | `nest-evlog-worker` | `job.post_checkout` | Includes `parentEvent` from API |
+
+Clock HTTP triggers use the same pattern (`captureProducerWideEvent` on `/trigger/*`).
+
 Docs: [NestJS integration](https://www.evlog.dev/integrate/frameworks/nestjs) · [Wide events](https://www.evlog.dev/learn/wide-events)
 
 ## Monorepo layout
@@ -108,8 +129,9 @@ docker-compose.yml     # Redis
 | `order-sync` | Every 1 min | `OrderSyncProcessor` |
 | `inventory-alert` | Every 2 min | `InventoryAlertProcessor` |
 | `notification-dispatch` | Every 5 min | `NotificationDispatchProcessor` |
+| `post-checkout` | **API** after `POST /checkout` | `PostCheckoutProcessor` (includes API `parentEvent`) |
 
-Clock registers queues and **adds** jobs. Worker registers the same queues and **processes** jobs. Connection via `REDIS_HOST` / `REDIS_PORT` or `REDIS_URL`.
+Clock registers queues and **adds** jobs. API only enqueues `post-checkout`. Worker registers the same queues and **processes** jobs. Connection via `REDIS_HOST` / `REDIS_PORT` or `REDIS_URL`.
 
 ## API reference
 
@@ -151,7 +173,8 @@ Optional body field: `"fail": "enqueue" | "worker"` (see [Simulated failures](#s
 curl -s http://localhost:3000/health
 curl -s http://localhost:3000/users/usr_alice
 
-# Success — one wide event across Users → Inventory → Pricing → Payments → Orders → Notifications
+# Success — HTTP wide event + post-checkout job (worker logs include parentEvent from API)
+# Requires: worker + Redis running. Response includes asyncJob.correlationId.
 curl -s -X POST http://localhost:3000/checkout \
   -H 'Content-Type: application/json' \
   -d '{
@@ -181,6 +204,26 @@ curl -s -X POST http://localhost:3000/checkout \
     "card": { "last4": "0000", "brand": "visa", "expiryMonth": 12, "expiryYear": 2030 }
   }'
 ```
+
+### api + worker (checkout → post-checkout job)
+
+Start **worker** and **Redis** before API checkout:
+
+```bash
+pnpm run start:worker
+pnpm run start:api
+curl -s -X POST http://localhost:3000/checkout -H 'Content-Type: application/json' -d '{
+  "userId": "usr_alice",
+  "items": [{ "sku": "sku_keyboard", "quantity": 1 }],
+  "card": { "last4": "4242", "brand": "visa", "expiryMonth": 12, "expiryYear": 2030 }
+}'
+```
+
+**Expected logs:**
+
+1. **API** — `POST /checkout 201` with full checkout context
+2. **API** — optional child `enqueue_post_checkout` (`log.fork`)
+3. **Worker** — `job.post_checkout` with `_parentRequestId`, `parentEvent` (user, checkout, order, pricing, …)
 
 ### clock + worker (happy path)
 

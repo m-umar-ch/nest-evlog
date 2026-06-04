@@ -1,30 +1,39 @@
 import type { JobFailureMode } from './failure.constants';
+import type { ProducerWideEventContext } from './producer-context.types';
 
 export type JobSource = 'cron' | 'manual' | 'api';
 
-export interface OrderSyncJobPayload {
+export interface JobPayloadBase {
   correlationId: string;
-  userId: string;
-  orderId?: string;
   source: JobSource;
-  /** When set (or via demo userId), clock fails before enqueue or worker fails mid-job. */
   failureMode?: JobFailureMode;
+  /** Producer wide-event snapshot (API checkout, clock trigger, …). */
+  producer?: ProducerWideEventContext;
 }
 
-export interface InventoryAlertJobPayload {
-  correlationId: string;
+export interface OrderSyncJobPayload extends JobPayloadBase {
+  userId: string;
+  orderId?: string;
+}
+
+export interface InventoryAlertJobPayload extends JobPayloadBase {
   sku: string;
   threshold: number;
   currentStock: number;
-  source: JobSource;
-  failureMode?: JobFailureMode;
 }
 
-export interface NotificationDispatchJobPayload {
-  correlationId: string;
+export interface NotificationDispatchJobPayload extends JobPayloadBase {
   userId: string;
   channel: 'email' | 'email+sms';
   template: string;
-  source: JobSource;
-  failureMode?: JobFailureMode;
+}
+
+/** Created by API after POST /checkout — worker runs async fulfillment with parent context. */
+export interface PostCheckoutJobPayload extends JobPayloadBase {
+  source: 'api';
+  orderId: string;
+  userId: string;
+  transactionId: string;
+  totalCents: number;
+  producer: ProducerWideEventContext;
 }

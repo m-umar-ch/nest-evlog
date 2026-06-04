@@ -1,13 +1,12 @@
 import { Body, Controller, Post } from '@nestjs/common';
+import { captureProducerWideEvent, type JobFailureMode } from '@nest-evlog/queues';
 import { useLogger } from 'evlog/nestjs';
-import type { JobFailureMode } from '@nest-evlog/queues';
 import { EnqueueService } from '../enqueue/enqueue.service';
 
 interface TriggerBody {
   userId?: string;
   sku?: string;
   currentStock?: number;
-  /** Force failure in clock (before enqueue) or worker (after dequeue). */
   fail?: JobFailureMode;
 }
 
@@ -18,6 +17,12 @@ export class TriggerController {
   @Post('order-sync')
   async triggerOrderSync(@Body() body: TriggerBody) {
     const log = useLogger();
+    const producer = captureProducerWideEvent(log, {
+      service: 'nest-evlog-clock',
+      method: 'POST',
+      path: '/trigger/order-sync',
+    });
+
     log.set({
       route: 'trigger.order_sync',
       trigger: 'manual',
@@ -27,7 +32,7 @@ export class TriggerController {
     const result = await this.enqueueService.enqueueOrderSync(
       body.userId ?? 'usr_alice',
       'manual',
-      body.fail,
+      { failureMode: body.fail, producer },
     );
 
     log.set({ enqueue: result });
@@ -36,7 +41,14 @@ export class TriggerController {
 
   @Post('inventory-alert')
   async triggerInventoryAlert(@Body() body: TriggerBody) {
-    useLogger().set({
+    const log = useLogger();
+    const producer = captureProducerWideEvent(log, {
+      service: 'nest-evlog-clock',
+      method: 'POST',
+      path: '/trigger/inventory-alert',
+    });
+
+    log.set({
       route: 'trigger.inventory_alert',
       trigger: 'manual',
       fail: body.fail ?? 'none',
@@ -46,13 +58,20 @@ export class TriggerController {
       body.sku ?? 'sku_webcam',
       body.currentStock ?? 0,
       'manual',
-      body.fail,
+      { failureMode: body.fail, producer },
     );
   }
 
   @Post('notification')
   async triggerNotification(@Body() body: TriggerBody) {
-    useLogger().set({
+    const log = useLogger();
+    const producer = captureProducerWideEvent(log, {
+      service: 'nest-evlog-clock',
+      method: 'POST',
+      path: '/trigger/notification',
+    });
+
+    log.set({
       route: 'trigger.notification',
       trigger: 'manual',
       fail: body.fail ?? 'none',
@@ -61,7 +80,7 @@ export class TriggerController {
     return this.enqueueService.enqueueNotificationDispatch(
       body.userId ?? 'usr_carol',
       'manual',
-      body.fail,
+      { failureMode: body.fail, producer },
     );
   }
 }

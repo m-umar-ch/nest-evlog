@@ -2,6 +2,7 @@ import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Job } from 'bullmq';
 import { runWithJobLogger } from '@nest-evlog/job-logging';
 import {
+  buildJobLoggerInitialContext,
   QUEUES,
   type NotificationDispatchJobPayload,
 } from '@nest-evlog/queues';
@@ -11,14 +12,17 @@ import { dispatchNotification } from './helpers/notification.helper';
 export class NotificationDispatchProcessor extends WorkerHost {
   async process(job: Job<NotificationDispatchJobPayload>) {
     return runWithJobLogger(
-      {
-        app: 'worker',
-        operation: 'job.notification_dispatch',
-        correlationId: job.data.correlationId,
-        jobId: job.id,
-        queue: QUEUES.NOTIFICATION_DISPATCH,
-        attempt: job.attemptsMade + 1,
-      },
+      buildJobLoggerInitialContext(
+        {
+          app: 'worker',
+          operation: 'job.notification_dispatch',
+          correlationId: job.data.correlationId,
+          jobId: job.id,
+          queue: QUEUES.NOTIFICATION_DISPATCH,
+          attempt: job.attemptsMade + 1,
+        },
+        job.data.producer,
+      ),
       async (log) => {
         log.set({
           job: {

@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { captureProducerWideEvent, QUEUES } from '@nest-evlog/queues';
 import { useLogger } from 'evlog/nestjs';
 import {
   assertNonEmpty,
@@ -6,6 +7,7 @@ import {
 } from '../common/helpers/validation.helper';
 import type { LineItem } from '../inventory/inventory.service';
 import { InventoryService } from '../inventory/inventory.service';
+import { CheckoutJobsService } from '../jobs/checkout-jobs.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { OrdersService } from '../orders/orders.service';
 import { PaymentsService } from '../payments/payments.service';
@@ -22,6 +24,7 @@ export class CheckoutService {
     private readonly paymentsService: PaymentsService,
     private readonly ordersService: OrdersService,
     private readonly notificationsService: NotificationsService,
+    private readonly checkoutJobsService: CheckoutJobsService,
   ) {}
 
   async processCheckout(dto: CheckoutDto): Promise<CheckoutResult> {
@@ -79,11 +82,36 @@ export class CheckoutService {
         },
       );
 
+      const producer = captureProducerWideEvent(log, {
+        service: 'nest-evlog-api',
+        method: 'POST',
+        path: '/checkout',
+      });
+
+      const asyncJob = await this.checkoutJobsService.enqueuePostCheckout({
+        orderId: order.id,
+        userId: user.id,
+        transactionId: payment.transactionId,
+        totalCents: order.totalCents,
+        producer,
+      });
+
+      if (log.fork) {
+        await log.fork('enqueue_post_checkout', async () => {
+          useLogger().set({
+            asyncJob,
+            queue: QUEUES.POST_CHECKOUT,
+            parentRequestId: producer.requestId,
+          });
+        });
+      }
+
       log.set({
         checkout: {
           completed: true,
           orderId: order.id,
           transactionId: payment.transactionId,
+          asyncJob,
         },
       });
 
@@ -95,6 +123,7 @@ export class CheckoutService {
           channel: notification.channel,
           delivered: notification.delivered,
         },
+        asyncJob,
       };
     } catch (error) {
       if (reservations) {

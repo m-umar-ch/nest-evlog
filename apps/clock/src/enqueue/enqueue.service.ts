@@ -5,12 +5,13 @@ import { runWithJobLogger, setJobStep } from '@nest-evlog/job-logging';
 import {
   QUEUES,
   assertEnqueueShouldSucceed,
+  generateCorrelationId,
   type InventoryAlertJobPayload,
   type JobFailureMode,
   type NotificationDispatchJobPayload,
   type OrderSyncJobPayload,
+  type ProducerWideEventContext,
 } from '@nest-evlog/queues';
-import { generateCorrelationId } from '../common/id.helper';
 import {
   buildInventoryAlertPayload,
   buildNotificationPayload,
@@ -22,6 +23,11 @@ const FAILING_JOB_OPTIONS = {
   removeOnComplete: 100,
   removeOnFail: 50,
 };
+
+export interface EnqueueOptions {
+  failureMode?: JobFailureMode;
+  producer?: ProducerWideEventContext;
+}
 
 @Injectable()
 export class EnqueueService {
@@ -37,9 +43,10 @@ export class EnqueueService {
   async enqueueOrderSync(
     userId: string,
     source: OrderSyncJobPayload['source'],
-    failureMode?: JobFailureMode,
+    options?: EnqueueOptions,
   ) {
     const correlationId = generateCorrelationId();
+    const failureMode = options?.failureMode;
 
     return runWithJobLogger(
       {
@@ -50,12 +57,10 @@ export class EnqueueService {
         failureMode: failureMode ?? 'none',
       },
       async (log) => {
-        const payload = buildOrderSyncPayload(
-          correlationId,
-          userId,
-          source,
+        const payload = buildOrderSyncPayload(correlationId, userId, source, {
           failureMode,
-        );
+          producer: options?.producer,
+        });
         setJobStep(log, 'build_payload', { userId, source, failureMode });
 
         assertEnqueueShouldSucceed(payload);
@@ -80,9 +85,10 @@ export class EnqueueService {
     sku: string,
     currentStock: number,
     source: InventoryAlertJobPayload['source'] = 'cron',
-    failureMode?: JobFailureMode,
+    options?: EnqueueOptions,
   ) {
     const correlationId = generateCorrelationId();
+    const failureMode = options?.failureMode;
 
     return runWithJobLogger(
       {
@@ -98,7 +104,7 @@ export class EnqueueService {
           sku,
           currentStock,
           source,
-          failureMode,
+          { failureMode, producer: options?.producer },
         );
         setJobStep(log, 'build_payload', { sku, currentStock, failureMode });
 
@@ -123,9 +129,10 @@ export class EnqueueService {
   async enqueueNotificationDispatch(
     userId: string,
     source: NotificationDispatchJobPayload['source'] = 'cron',
-    failureMode?: JobFailureMode,
+    options?: EnqueueOptions,
   ) {
     const correlationId = generateCorrelationId();
+    const failureMode = options?.failureMode;
 
     return runWithJobLogger(
       {
@@ -140,7 +147,7 @@ export class EnqueueService {
           correlationId,
           userId,
           source,
-          failureMode,
+          { failureMode, producer: options?.producer },
         );
         setJobStep(log, 'build_payload', { userId, failureMode });
 

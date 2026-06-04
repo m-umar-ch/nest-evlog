@@ -2,3 +2,4 @@
 - in this application various nested functions will be created like a service will inject another service and in a function it will call various other helper function and show how we can emit a single wide-event with evlog even for complex scenerios like that
 - monorepo with three apps: `apps/api` (HTTP), `apps/clock` (crons + BullMQ producer), `apps/worker` (BullMQ consumer) — not microservices, shared Redis queues via `libs/queues`
 - clock/worker use `createLogger` through `@nest-evlog/job-logging` (`runWithJobLogger`); api/clock HTTP use `useLogger()` from `evlog/nestjs`
+- API enqueues `post-checkout` jobs with `captureProducerWideEvent()`; worker merges via `buildJobLoggerInitialContext()` into `parentEvent` + `_parentRequestId`

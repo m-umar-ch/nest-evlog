@@ -5,6 +5,7 @@ import { HealthController } from './health.controller';
 import { InventoryAlertProcessor } from './processors/inventory-alert.processor';
 import { NotificationDispatchProcessor } from './processors/notification-dispatch.processor';
 import { OrderSyncProcessor } from './processors/order-sync.processor';
+import { PostCheckoutProcessor } from './processors/post-checkout.processor';
 
 @Module({
   imports: [
@@ -18,6 +19,7 @@ import { OrderSyncProcessor } from './processors/order-sync.processor';
     OrderSyncProcessor,
     InventoryAlertProcessor,
     NotificationDispatchProcessor,
+    PostCheckoutProcessor,
   ],
 })
 export class AppModule {}
