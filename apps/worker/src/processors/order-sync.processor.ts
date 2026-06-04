@@ -22,6 +22,7 @@ export class OrderSyncProcessor extends WorkerHost {
             name: job.name,
             source: job.data.source,
             userId: job.data.userId,
+            failureMode: job.data.failureMode ?? 'none',
           },
         });
 

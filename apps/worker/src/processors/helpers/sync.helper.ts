@@ -1,4 +1,7 @@
-import type { OrderSyncJobPayload } from '@nest-evlog/queues';
+import {
+  assertWorkerShouldSucceed,
+  type OrderSyncJobPayload,
+} from '@nest-evlog/queues';
 import type { JobLogger } from '@nest-evlog/job-logging';
 import { setJobStep } from '@nest-evlog/job-logging';
 
@@ -11,6 +14,11 @@ export async function simulateOrderSync(
 
   setJobStep(log, 'merge_local_state', { orderId: payload.orderId ?? 'none' });
   await delay(30);
+
+  assertWorkerShouldSucceed(payload, {
+    step: 'merge_local_state',
+    queue: 'order-sync',
+  });
 
   setJobStep(log, 'persist_snapshot');
   await delay(20);

@@ -4,7 +4,9 @@ import { Queue } from 'bullmq';
 import { runWithJobLogger, setJobStep } from '@nest-evlog/job-logging';
 import {
   QUEUES,
+  assertEnqueueShouldSucceed,
   type InventoryAlertJobPayload,
+  type JobFailureMode,
   type NotificationDispatchJobPayload,
   type OrderSyncJobPayload,
 } from '@nest-evlog/queues';
@@ -14,6 +16,12 @@ import {
   buildNotificationPayload,
   buildOrderSyncPayload,
 } from './helpers/payload.helper';
+
+const FAILING_JOB_OPTIONS = {
+  attempts: 2,
+  removeOnComplete: 100,
+  removeOnFail: 50,
+};
 
 @Injectable()
 export class EnqueueService {
@@ -26,7 +34,11 @@ export class EnqueueService {
     private readonly notificationQueue: Queue<NotificationDispatchJobPayload>,
   ) {}
 
-  async enqueueOrderSync(userId: string, source: OrderSyncJobPayload['source']) {
+  async enqueueOrderSync(
+    userId: string,
+    source: OrderSyncJobPayload['source'],
+    failureMode?: JobFailureMode,
+  ) {
     const correlationId = generateCorrelationId();
 
     return runWithJobLogger(
@@ -35,13 +47,23 @@ export class EnqueueService {
         operation: 'enqueue.order_sync',
         correlationId,
         queue: QUEUES.ORDER_SYNC,
+        failureMode: failureMode ?? 'none',
       },
       async (log) => {
-        const payload = buildOrderSyncPayload(correlationId, userId, source);
-        setJobStep(log, 'build_payload', { userId, source });
+        const payload = buildOrderSyncPayload(
+          correlationId,
+          userId,
+          source,
+          failureMode,
+        );
+        setJobStep(log, 'build_payload', { userId, source, failureMode });
+
+        assertEnqueueShouldSucceed(payload);
+        setJobStep(log, 'validate_enqueue');
 
         const job = await this.orderSyncQueue.add('sync', payload, {
           jobId: correlationId,
+          ...(failureMode === 'worker' ? FAILING_JOB_OPTIONS : {}),
         });
 
         log.set({
@@ -54,7 +76,12 @@ export class EnqueueService {
     );
   }
 
-  async enqueueInventoryAlert(sku: string, currentStock: number) {
+  async enqueueInventoryAlert(
+    sku: string,
+    currentStock: number,
+    source: InventoryAlertJobPayload['source'] = 'cron',
+    failureMode?: JobFailureMode,
+  ) {
     const correlationId = generateCorrelationId();
 
     return runWithJobLogger(
@@ -63,18 +90,24 @@ export class EnqueueService {
         operation: 'enqueue.inventory_alert',
         correlationId,
         queue: QUEUES.INVENTORY_ALERT,
+        failureMode: failureMode ?? 'none',
       },
       async (log) => {
         const payload = buildInventoryAlertPayload(
           correlationId,
           sku,
           currentStock,
-          'cron',
+          source,
+          failureMode,
         );
-        setJobStep(log, 'build_payload', { sku, currentStock });
+        setJobStep(log, 'build_payload', { sku, currentStock, failureMode });
+
+        assertEnqueueShouldSucceed({ ...payload, userId: undefined });
+        setJobStep(log, 'validate_enqueue');
 
         const job = await this.inventoryAlertQueue.add('alert', payload, {
           jobId: correlationId,
+          ...(failureMode === 'worker' ? FAILING_JOB_OPTIONS : {}),
         });
 
         log.set({
@@ -87,7 +120,11 @@ export class EnqueueService {
     );
   }
 
-  async enqueueNotificationDispatch(userId: string) {
+  async enqueueNotificationDispatch(
+    userId: string,
+    source: NotificationDispatchJobPayload['source'] = 'cron',
+    failureMode?: JobFailureMode,
+  ) {
     const correlationId = generateCorrelationId();
 
     return runWithJobLogger(
@@ -96,17 +133,23 @@ export class EnqueueService {
         operation: 'enqueue.notification_dispatch',
         correlationId,
         queue: QUEUES.NOTIFICATION_DISPATCH,
+        failureMode: failureMode ?? 'none',
       },
       async (log) => {
         const payload = buildNotificationPayload(
           correlationId,
           userId,
-          'cron',
+          source,
+          failureMode,
         );
-        setJobStep(log, 'build_payload', { userId });
+        setJobStep(log, 'build_payload', { userId, failureMode });
+
+        assertEnqueueShouldSucceed(payload);
+        setJobStep(log, 'validate_enqueue');
 
         const job = await this.notificationQueue.add('dispatch', payload, {
           jobId: correlationId,
+          ...(failureMode === 'worker' ? FAILING_JOB_OPTIONS : {}),
         });
 
         log.set({

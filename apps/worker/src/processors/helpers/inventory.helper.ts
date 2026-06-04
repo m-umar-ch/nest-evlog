@@ -1,4 +1,7 @@
-import type { InventoryAlertJobPayload } from '@nest-evlog/queues';
+import {
+  assertWorkerShouldSucceed,
+  type InventoryAlertJobPayload,
+} from '@nest-evlog/queues';
 import type { JobLogger } from '@nest-evlog/job-logging';
 import { setJobStep } from '@nest-evlog/job-logging';
 
@@ -14,6 +17,11 @@ export async function processInventoryAlert(
 
   const belowThreshold = payload.currentStock < payload.threshold;
   log.set({ inventory: { belowThreshold } });
+
+  assertWorkerShouldSucceed(
+    { failureMode: payload.failureMode, sku: payload.sku },
+    { step: 'evaluate_threshold', queue: 'inventory-alert' },
+  );
 
   if (belowThreshold) {
     setJobStep(log, 'notify_ops_team');

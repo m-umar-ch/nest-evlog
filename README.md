@@ -1,127 +1,157 @@
 # nest-evlog
 
-A **pnpm monorepo** demonstrating [evlog](https://www.evlog.dev) wide-event logging across three independent NestJS applications:
+A **pnpm / yarn monorepo** that demonstrates [evlog](https://www.evlog.dev) **wide-event logging** in realistic NestJS setups:
 
-| App | Port | Role | evlog service name |
-|-----|------|------|-------------------|
-| **api** | 3000 | HTTP checkout API (nested services + helpers) | `nest-evlog-api` |
-| **clock** | 3002 | Cron schedules + BullMQ **producer** | `nest-evlog-clock` |
-| **worker** | 3003 | BullMQ **consumer** (job processors) | `nest-evlog-worker` |
+- **HTTP requests** with deeply nested services and helpers (`api`)
+- **Cron + queue producers** without HTTP request scope (`clock`)
+- **Background job consumers** (`worker`)
 
-Apps are **not** connected via Nest microservices. They share **Redis + BullMQ queue names** only (`libs/queues`).
+Three apps run on different ports, share **Redis + BullMQ** only (no Nest microservices).
 
-## About evlog (multi-application)
-
-Each process calls `initLogger({ env: { service: '...' } })` with a **distinct service name**, so terminal output is tagged per app:
-
-```
-INFO [nest-evlog-api]    POST /checkout 201 ...
-INFO [nest-evlog-clock]  POST /trigger/order-sync 201 ...
-INFO [nest-evlog-worker] job.order_sync ...
-```
-
-### HTTP apps (api, clock)
-
-- `EvlogModule.forRoot()` — request-scoped logger via middleware
-- `useLogger().set({ ... })` — accumulate context in controllers/services
-
-### Background work (clock crons, worker jobs)
-
-- `createLogger()` via `runWithJobLogger()` in `@nest-evlog/job-logging`
-- One wide event per **cron tick** or **BullMQ job**
-- `correlationId` in job payload links clock enqueue → worker process logs
-
-### Correlation across apps
-
-```
-clock enqueue  →  wide event: correlationId=corr_abc, queue=order-sync
-worker process →  wide event: correlationId=corr_abc, operation=job.order_sync
-```
-
-Search logs by `correlationId` to trace a job from producer to consumer without microservice RPC.
-
-Docs: [evlog NestJS](https://www.evlog.dev/integrate/frameworks/nestjs) · [Wide events](https://www.evlog.dev/learn/wide-events)
-
-## Monorepo layout
-
-```
-apps/
-  api/          # E-commerce checkout API
-  clock/        # @nestjs/schedule crons + BullMQ enqueue
-  worker/       # BullMQ processors
-libs/
-  queues/       # Shared queue names, job payloads, Redis config
-  job-logging/  # runWithJobLogger() for cron/job wide events
-docker-compose.yml   # Redis for BullMQ
-```
-
-### BullMQ queues (shared)
-
-| Queue | Clock (producer) | Worker (consumer) |
-|-------|------------------|-------------------|
-| `order-sync` | Every 1 min + manual trigger | `OrderSyncProcessor` |
-| `inventory-alert` | Every 2 min + manual trigger | `InventoryAlertProcessor` |
-| `notification-dispatch` | Every 5 min + manual trigger | `NotificationDispatchProcessor` |
-
-## Prerequisites
-
-- Node.js 20+
-- pnpm
-- Redis (for clock + worker)
+## Quick start
 
 ```bash
-docker compose up -d    # starts Redis on :6379
-pnpm install
-```
+docker compose up -d          # Redis on :6379
+pnpm install                  # or: yarn install
 
-## Running the apps
-
-Use **three terminals** (or background processes).
-
-**pnpm** (from repo root):
-
-```bash
-pnpm run start:api
-pnpm run start:clock
-pnpm run start:worker
+# Three terminals
+pnpm run start:worker         # :3003 — start first
+pnpm run start:clock          # :3002
+pnpm run start:api            # :3000
 ```
 
 **yarn** (from repo root):
 
 ```bash
-yarn workspace @nest-evlog/api start:dev
-yarn workspace @nest-evlog/clock start:dev
 yarn workspace @nest-evlog/worker start:dev
+yarn workspace @nest-evlog/clock start:dev
+yarn workspace @nest-evlog/api start:dev
 ```
 
-Clock and worker build shared libs automatically via `prestart:dev` before Nest starts.
+Watch each terminal for wide events tagged by service name.
 
-Custom ports:
+## Applications
+
+| App | Default port | evlog `service` | Responsibility |
+|-----|----------------|-----------------|----------------|
+| **api** | 3000 | `nest-evlog-api` | E-commerce checkout API |
+| **clock** | 3002 | `nest-evlog-clock` | Crons + BullMQ enqueue (producer) |
+| **worker** | 3003 | `nest-evlog-worker` | BullMQ job processors (consumer) |
 
 ```bash
-PORT=3001 pnpm run start:api
-PORT=3002 pnpm run start:clock   # default
-PORT=3003 pnpm run start:worker  # default
+PORT=3001 pnpm run start:api    # override any app port
 ```
 
-Build all:
+## How evlog is used
 
-```bash
-pnpm run build
+### One wide event per unit of work
+
+| Unit of work | App | Mechanism |
+|--------------|-----|-----------|
+| HTTP request | api, clock | `EvlogModule` + `useLogger().set()` |
+| Cron tick | clock | `runWithJobLogger()` → `createLogger()` |
+| Enqueue operation | clock | `runWithJobLogger()` (nested under cron or HTTP) |
+| BullMQ job | worker | `runWithJobLogger()` per `process()` call |
+
+### HTTP (api + clock triggers)
+
+```typescript
+const log = useLogger();
+log.set({ checkout: { userId: 'usr_alice' } });
+// … nested services also call useLogger() — same event
 ```
+
+Emitted when the HTTP response finishes (or on error via `EvlogExceptionFilter`).
+
+### Background (clock crons, worker jobs)
+
+```typescript
+await runWithJobLogger({ operation: 'job.order_sync', correlationId }, async (log) => {
+  log.set({ job: { userId } });
+  // … helpers call setJobStep(log, 'merge_local_state')
+});
+// emits one wide event: outcome success | failure
+```
+
+### Correlation across apps
+
+Jobs carry a `correlationId`. Search logs to trace producer → consumer:
+
+```
+INFO [nest-evlog-clock]  enqueue.order_sync   correlationId=corr_abc …
+INFO [nest-evlog-worker] job.order_sync       correlationId=corr_abc …
+```
+
+Docs: [NestJS integration](https://www.evlog.dev/integrate/frameworks/nestjs) · [Wide events](https://www.evlog.dev/learn/wide-events)
+
+## Monorepo layout
+
+```
+apps/
+  api/                 # Checkout API (nested modules + helpers)
+  clock/               # @nestjs/schedule + BullMQ producer
+  worker/              # BullMQ processors
+libs/
+  queues/              # Queue names, payloads, Redis config, failure helpers
+  job-logging/         # runWithJobLogger(), setJobStep()
+scripts/
+  build-libs.cjs       # Compiles libs before clock/worker start
+docker-compose.yml     # Redis
+```
+
+**Do not commit** `dist/`, `node_modules/`, or `.pnpm-store/` — they are gitignored. Run `pnpm run build` or let `prestart:dev` build libs locally.
+
+## BullMQ queues
+
+| Queue | Clock (cron + trigger) | Worker processor |
+|-------|------------------------|------------------|
+| `order-sync` | Every 1 min | `OrderSyncProcessor` |
+| `inventory-alert` | Every 2 min | `InventoryAlertProcessor` |
+| `notification-dispatch` | Every 5 min | `NotificationDispatchProcessor` |
+
+Clock registers queues and **adds** jobs. Worker registers the same queues and **processes** jobs. Connection via `REDIS_HOST` / `REDIS_PORT` or `REDIS_URL`.
+
+## API reference
+
+### api — `localhost:3000`
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/health` | Health (excluded from evlog) |
+| `GET` | `/users/:id` | User lookup |
+| `POST` | `/checkout` | Full checkout pipeline |
+| `GET` | `/orders/:id` | Order by ID (after checkout) |
+
+**Sample users:** `usr_alice` (pro), `usr_bob` (free), `usr_carol` (enterprise)
+
+**Sample SKUs:** `sku_keyboard`, `sku_monitor`, `sku_headset`, `sku_webcam` (out of stock)
+
+### clock — `localhost:3002`
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/health` | Health (excluded from evlog) |
+| `POST` | `/trigger/order-sync` | Enqueue order-sync job |
+| `POST` | `/trigger/inventory-alert` | Enqueue inventory alert |
+| `POST` | `/trigger/notification` | Enqueue notification |
+
+Optional body field: `"fail": "enqueue" | "worker"` (see [Simulated failures](#simulated-failures)).
+
+### worker — `localhost:3003`
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/health` | Health only — jobs run via BullMQ |
 
 ## Testing with curl
 
-### API (`localhost:3000`)
+### api
 
 ```bash
-# Health
 curl -s http://localhost:3000/health
-
-# User lookup
 curl -s http://localhost:3000/users/usr_alice
 
-# Full checkout (wide event across 6 services)
+# Success — one wide event across Users → Inventory → Pricing → Payments → Orders → Notifications
 curl -s -X POST http://localhost:3000/checkout \
   -H 'Content-Type: application/json' \
   -d '{
@@ -130,15 +160,10 @@ curl -s -X POST http://localhost:3000/checkout \
       { "sku": "sku_keyboard", "quantity": 1 },
       { "sku": "sku_headset", "quantity": 1 }
     ],
-    "card": {
-      "last4": "4242",
-      "brand": "visa",
-      "expiryMonth": 12,
-      "expiryYear": 2030
-    }
+    "card": { "last4": "4242", "brand": "visa", "expiryMonth": 12, "expiryYear": 2030 }
   }'
 
-# Out of stock (409 wide event with error)
+# 409 — out of stock (error on same wide event)
 curl -s -X POST http://localhost:3000/checkout \
   -H 'Content-Type: application/json' \
   -d '{
@@ -146,102 +171,138 @@ curl -s -X POST http://localhost:3000/checkout \
     "items": [{ "sku": "sku_webcam", "quantity": 1 }],
     "card": { "last4": "4242", "brand": "visa", "expiryMonth": 12, "expiryYear": 2030 }
   }'
+
+# 402 — payment declined (last4: 0000)
+curl -s -X POST http://localhost:3000/checkout \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "userId": "usr_alice",
+    "items": [{ "sku": "sku_keyboard", "quantity": 1 }],
+    "card": { "last4": "0000", "brand": "visa", "expiryMonth": 12, "expiryYear": 2030 }
+  }'
 ```
 
-### Clock (`localhost:3002`) — manual enqueue + evlog
+### clock + worker (happy path)
 
-Triggers a **HTTP wide event** (clock) and a **job logger wide event** (enqueue), then worker picks up the job.
+Start **worker** before **clock**. Then:
 
 ```bash
 curl -s http://localhost:3002/health
 
-# Enqueue order-sync (watch clock + worker terminals)
 curl -s -X POST http://localhost:3002/trigger/order-sync \
   -H 'Content-Type: application/json' \
   -d '{"userId": "usr_alice"}'
 
-# Enqueue inventory alert
 curl -s -X POST http://localhost:3002/trigger/inventory-alert \
   -H 'Content-Type: application/json' \
   -d '{"sku": "sku_webcam", "currentStock": 0}'
 
-# Enqueue notification dispatch
 curl -s -X POST http://localhost:3002/trigger/notification \
   -H 'Content-Type: application/json' \
   -d '{"userId": "usr_carol"}'
 ```
 
-Crons also enqueue automatically (order-sync every minute, etc.) when clock is running.
+**Expected logs (success):**
 
-### Worker (`localhost:3003`)
+1. **Clock** — `POST /trigger/order-sync 200` with `route`, `enqueue`
+2. **Clock** — `enqueue.order_sync` with `correlationId`, `bullmq`, `outcome: success`
+3. **Worker** — `job.order_sync` with same `correlationId`, `steps`, `outcome: success`
+
+Crons enqueue automatically while clock is running (1 min / 2 min / 5 min schedules).
+
+### Simulated failures
+
+Demonstrates **error wide events** with `why` / `fix` from `createError()` and partial `steps` before failure.
+
+| `fail` | Where it fails | What you see |
+|--------|----------------|--------------|
+| `"enqueue"` | Clock, before Redis | `ERROR` on `enqueue.*` + HTTP `422` on trigger |
+| `"worker"` | Worker, mid-job | `ERROR` on `job.*` with partial steps; BullMQ retries once (`attempt: 1`, `2`) |
 
 ```bash
-curl -s http://localhost:3003/health
+# Enqueue rejected in clock
+curl -s -X POST http://localhost:3002/trigger/order-sync \
+  -H 'Content-Type: application/json' \
+  -d '{"fail": "enqueue"}'
+
+# Enqueued; worker fails after merge_local_state
+curl -s -X POST http://localhost:3002/trigger/order-sync \
+  -H 'Content-Type: application/json' \
+  -d '{"fail": "worker"}'
+
+curl -s -X POST http://localhost:3002/trigger/inventory-alert \
+  -H 'Content-Type: application/json' \
+  -d '{"sku": "sku_webcam", "currentStock": 0, "fail": "worker"}'
 ```
 
-No job triggers here — start worker **before** clock enqueues so jobs are processed immediately. Job wide events appear in the **worker terminal**.
+**Demo IDs** (equivalent to `fail`):
 
-## Example log flow (manual order-sync)
+| ID | Effect |
+|----|--------|
+| `usr_fail_enqueue` | Enqueue failure |
+| `usr_fail_worker` | Worker failure (order-sync, notification) |
+| `sku_fail` | Worker failure (inventory-alert) |
 
-1. **Clock terminal** — HTTP request completes:
-   ```
-   INFO [nest-evlog-clock] POST /trigger/order-sync 200
-     ├─ route: trigger.order_sync
-     ├─ trigger: manual
-     └─ enqueue: correlationId=corr_xxx jobId=corr_xxx
-   ```
-
-2. **Clock terminal** — enqueue operation (nested `runWithJobLogger`):
-   ```
-   INFO [nest-evlog-clock] enqueue.order_sync
-     ├─ correlationId: corr_xxx
-     ├─ bullmq: jobId=corr_xxx queue=order-sync
-     └─ outcome: success
-   ```
-
-3. **Worker terminal** — job processed:
-   ```
-   INFO [nest-evlog-worker] job.order_sync
-     ├─ correlationId: corr_xxx
-     ├─ job: userId=usr_alice source=manual
-     ├─ steps: fetch_remote_orders → merge_local_state → persist_snapshot
-     └─ outcome: success
-   ```
-
-## API app architecture
-
-E-commerce checkout with nested services (in-memory data):
+**Clock — `fail: "enqueue"`** (two ERROR events):
 
 ```
-CheckoutService
-  ├── UsersService
-  ├── InventoryService (+ stock.helper.ts)
-  ├── PricingService (+ discount.helper.ts)
-  ├── PaymentsService (+ card.helper.ts)
-  ├── OrdersService (+ order-status.helper.ts)
-  └── NotificationsService (+ template.helper.ts)
+ERROR [nest-evlog-clock] enqueue.order_sync
+  ├─ steps: build_payload
+  ├─ error: message=Enqueue rejected by policy …
+  └─ outcome: failure
+
+ERROR [nest-evlog-clock] POST /trigger/order-sync 422
+  ├─ route: trigger.order_sync
+  └─ error: (same structured error on HTTP event)
 ```
 
-Sample users: `usr_alice`, `usr_bob`, `usr_carol`  
-Sample SKUs: `sku_keyboard`, `sku_monitor`, `sku_headset`, `sku_webcam` (out of stock)
+**Worker — `fail: "worker"`** (per retry attempt):
+
+```
+ERROR [nest-evlog-worker] job.order_sync
+  ├─ correlationId: corr_xxx
+  ├─ attempt: 1
+  ├─ job: failureMode=worker
+  ├─ steps: fetch_remote_orders → merge_local_state
+  ├─ error: message=Job processing failed (simulated) why=Simulated failure after step "merge_local_state" …
+  └─ outcome: failure
+```
+
+Implementation: `libs/queues` (`assertEnqueueShouldSucceed`, `assertWorkerShouldSucceed`).
+
+## api architecture
+
+```
+CheckoutController
+  └── CheckoutService
+        ├── UsersService
+        ├── InventoryService      (+ stock.helper.ts)
+        ├── PricingService        (+ discount.helper.ts)
+        ├── PaymentsService       (+ card.helper.ts)
+        ├── OrdersService         (+ order-status.helper.ts)
+        └── NotificationsService  (+ template.helper.ts)
+```
+
+Each layer calls `useLogger().set()` — one wide event per `POST /checkout`.
 
 ## Environment variables
 
-| Variable | Default | Used by |
-|----------|---------|---------|
-| `PORT` | 3000 / 3002 / 3003 | Each app |
+| Variable | Default | Apps |
+|----------|---------|------|
+| `PORT` | 3000 / 3002 / 3003 | all |
 | `REDIS_HOST` | `localhost` | clock, worker |
 | `REDIS_PORT` | `6379` | clock, worker |
 | `REDIS_URL` | — | clock, worker (overrides host/port) |
 
-## Scripts
+## Scripts (repo root)
 
 | Command | Description |
 |---------|-------------|
 | `pnpm run start:api` | API dev server |
-| `pnpm run start:clock` | Clock dev server |
-| `pnpm run start:worker` | Worker dev server |
-| `pnpm run build` | Build all packages |
+| `pnpm run start:clock` | Clock dev server (builds libs first) |
+| `pnpm run start:worker` | Worker dev server (builds libs first) |
+| `pnpm run build` | Build libs + all apps |
+| `pnpm run build:api` | Build API only |
 | `pnpm run test` | API unit tests |
 | `pnpm run test:e2e` | API e2e tests |
 
@@ -249,19 +310,29 @@ Sample SKUs: `sku_keyboard`, `sku_monitor`, `sku_headset`, `sku_webcam` (out of 
 
 ### `Cannot find module '.../dist/main'`
 
-This happens when TypeScript emits nested paths like `dist/apps/clock/src/main.js` instead of `dist/main.js` (usually caused by `paths` aliases in `tsconfig.build.json`). This repo builds `libs/queues` and `libs/job-logging` to their own `dist/` folders first, then compiles each app with `rootDir: ./src`.
-
-If you hit this after an old build:
+Clock/worker expect `apps/<app>/dist/main.js`. Build shared libs first:
 
 ```bash
 rm -rf apps/clock/dist apps/worker/dist
 node scripts/build-libs.cjs
-yarn workspace @nest-evlog/clock start:dev
+pnpm run start:clock
 ```
+
+Caused by old `paths` aliases emitting `dist/apps/clock/src/main.js`. Current `tsconfig.build.json` uses `rootDir: ./src`.
+
+### Worker not processing jobs
+
+1. Redis running: `docker compose up -d`
+2. Worker started **before** clock enqueues
+3. Check worker terminal for connection errors
+
+### No wide events
+
+Ensure you're watching the **process terminal** (not curl output). Each app calls `initLogger()` in `main.ts` with its own `service` name.
 
 ## Resources
 
-- [evlog documentation](https://www.evlog.dev)
-- [evlog NestJS guide](https://www.evlog.dev/integrate/frameworks/nestjs)
+- [evlog](https://www.evlog.dev)
+- [evlog + NestJS](https://www.evlog.dev/integrate/frameworks/nestjs)
 - [BullMQ](https://docs.bullmq.io/)
 - [NestJS](https://docs.nestjs.com)

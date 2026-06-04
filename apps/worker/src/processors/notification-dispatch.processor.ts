@@ -26,6 +26,7 @@ export class NotificationDispatchProcessor extends WorkerHost {
             source: job.data.source,
             userId: job.data.userId,
             template: job.data.template,
+            failureMode: job.data.failureMode ?? 'none',
           },
         });
 

@@ -22,6 +22,7 @@ export class InventoryAlertProcessor extends WorkerHost {
             name: job.name,
             source: job.data.source,
             sku: job.data.sku,
+            failureMode: job.data.failureMode ?? 'none',
           },
         });
 

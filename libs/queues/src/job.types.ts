@@ -1,3 +1,5 @@
+import type { JobFailureMode } from './failure.constants';
+
 export type JobSource = 'cron' | 'manual' | 'api';
 
 export interface OrderSyncJobPayload {
@@ -5,6 +7,8 @@ export interface OrderSyncJobPayload {
   userId: string;
   orderId?: string;
   source: JobSource;
+  /** When set (or via demo userId), clock fails before enqueue or worker fails mid-job. */
+  failureMode?: JobFailureMode;
 }
 
 export interface InventoryAlertJobPayload {
@@ -13,6 +17,7 @@ export interface InventoryAlertJobPayload {
   threshold: number;
   currentStock: number;
   source: JobSource;
+  failureMode?: JobFailureMode;
 }
 
 export interface NotificationDispatchJobPayload {
@@ -21,4 +26,5 @@ export interface NotificationDispatchJobPayload {
   channel: 'email' | 'email+sms';
   template: string;
   source: JobSource;
+  failureMode?: JobFailureMode;
 }
