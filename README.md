@@ -1,155 +1,127 @@
 # nest-evlog
 
-A NestJS demo application that shows **wide-event logging** with [evlog](https://www.evlog.dev) across a realistic multi-module codebase: services inject other services, business logic calls standalone helper functions, and every layer contributes context to **one log event per HTTP request**.
+A **pnpm monorepo** demonstrating [evlog](https://www.evlog.dev) wide-event logging across three independent NestJS applications:
 
-## About evlog
+| App | Port | Role | evlog service name |
+|-----|------|------|-------------------|
+| **api** | 3000 | HTTP checkout API (nested services + helpers) | `nest-evlog-api` |
+| **clock** | 3002 | Cron schedules + BullMQ **producer** | `nest-evlog-clock` |
+| **worker** | 3003 | BullMQ **consumer** (job processors) | `nest-evlog-worker` |
 
-Traditional logging often emits many small lines per request (controller started, service called, DB query, etc.). **Wide events** flip that model: you accumulate structured context throughout the request lifecycle, then emit a single rich event when the response completes.
+Apps are **not** connected via Nest microservices. They share **Redis + BullMQ queue names** only (`libs/queues`).
 
-In this app:
+## About evlog (multi-application)
 
-- `EvlogModule.forRoot()` registers global middleware that creates a request-scoped logger.
-- `useLogger()` from `evlog/nestjs` accesses that logger from **any** depth in the call stack (controllers, services, helpers) via `AsyncLocalStorage` — no need to pass `req` or a logger instance through constructors.
-- `log.set({ ... })` merges fields into the current request's event.
-- `createError()` produces structured errors with `why`, `fix`, and `link` fields.
-- `EvlogExceptionFilter` logs errors into the same wide event and returns a consistent JSON error shape.
-
-Docs: [evlog NestJS integration](https://www.evlog.dev/integrate/frameworks/nestjs)
-
-### Example wide event (checkout)
-
-After `POST /checkout`, the server terminal shows one event with context from every layer:
+Each process calls `initLogger({ env: { service: '...' } })` with a **distinct service name**, so terminal output is tagged per app:
 
 ```
-INFO [nest-evlog] POST /checkout 201 in 2ms
-  ├─ checkout: userId=usr_alice ... completed=true orderId=ord_...
-  ├─ user: name=Alice Chen plan=pro loyaltyPoints=1250
-  ├─ inventory: reservations=[...] stockAfter=[...]
-  ├─ pricing: subtotal=$289.98 discount=$55.82 total=$253.48
-  ├─ payment: card=****-4242 status=authorized transactionId=txn_...
-  ├─ order: id=ord_... status=confirmed itemCount=2
-  ├─ loyalty: pointsUsed=1250 pointsRemaining=0
-  └─ notification: channel=email delivered=true
+INFO [nest-evlog-api]    POST /checkout 201 ...
+INFO [nest-evlog-clock]  POST /trigger/order-sync 201 ...
+INFO [nest-evlog-worker] job.order_sync ...
 ```
 
-## Architecture
+### HTTP apps (api, clock)
 
-The app models an e-commerce **checkout flow** with in-memory data (no external DB).
+- `EvlogModule.forRoot()` — request-scoped logger via middleware
+- `useLogger().set({ ... })` — accumulate context in controllers/services
 
-```
-CheckoutController
-  └── CheckoutService          ← orchestrates the full flow
-        ├── UsersService       ← validation, loyalty points
-        ├── InventoryService   ← stock reservation (+ stock.helper.ts)
-        ├── PricingService     ← discounts, tax (+ discount.helper.ts)
-        ├── PaymentsService    ← card charge (+ card.helper.ts)
-        ├── OrdersService      ← order persistence (+ order-status.helper.ts)
-        └── NotificationsService ← confirmation email (+ template.helper.ts)
-```
+### Background work (clock crons, worker jobs)
 
-### Project structure
+- `createLogger()` via `runWithJobLogger()` in `@nest-evlog/job-logging`
+- One wide event per **cron tick** or **BullMQ job**
+- `correlationId` in job payload links clock enqueue → worker process logs
+
+### Correlation across apps
 
 ```
-src/
-├── main.ts                          # initLogger() + global EvlogExceptionFilter
-├── app.module.ts                    # EvlogModule.forRoot({ exclude: ['/health'] })
-├── health.controller.ts
-├── common/
-│   ├── filters/evlog-exception.filter.ts
-│   └── helpers/                     # id, money, validation
-├── users/                           # GET /users/:id
-├── inventory/
-├── pricing/
-├── payments/
-├── notifications/
-├── orders/                          # GET /orders/:id
-└── checkout/                        # POST /checkout
+clock enqueue  →  wide event: correlationId=corr_abc, queue=order-sync
+worker process →  wide event: correlationId=corr_abc, operation=job.order_sync
 ```
 
-### Modules
+Search logs by `correlationId` to trace a job from producer to consumer without microservice RPC.
 
-| Module | Responsibility |
-|--------|----------------|
-| **UsersModule** | User lookup, checkout eligibility, loyalty points |
-| **InventoryModule** | Product stock and reservations |
-| **PricingModule** | Plan, bulk, and loyalty discounts + tax |
-| **PaymentsModule** | Card validation and authorization |
-| **OrdersModule** | Order creation and status |
-| **NotificationsModule** | Order confirmation messages |
-| **CheckoutModule** | End-to-end checkout orchestration |
+Docs: [evlog NestJS](https://www.evlog.dev/integrate/frameworks/nestjs) · [Wide events](https://www.evlog.dev/learn/wide-events)
 
-## Getting started
+## Monorepo layout
+
+```
+apps/
+  api/          # E-commerce checkout API
+  clock/        # @nestjs/schedule crons + BullMQ enqueue
+  worker/       # BullMQ processors
+libs/
+  queues/       # Shared queue names, job payloads, Redis config
+  job-logging/  # runWithJobLogger() for cron/job wide events
+docker-compose.yml   # Redis for BullMQ
+```
+
+### BullMQ queues (shared)
+
+| Queue | Clock (producer) | Worker (consumer) |
+|-------|------------------|-------------------|
+| `order-sync` | Every 1 min + manual trigger | `OrderSyncProcessor` |
+| `inventory-alert` | Every 2 min + manual trigger | `InventoryAlertProcessor` |
+| `notification-dispatch` | Every 5 min + manual trigger | `NotificationDispatchProcessor` |
+
+## Prerequisites
+
+- Node.js 20+
+- pnpm
+- Redis (for clock + worker)
 
 ```bash
+docker compose up -d    # starts Redis on :6379
 pnpm install
-pnpm run start:dev
 ```
 
-Default port is **3000**. Override with:
+## Running the apps
+
+Use **three terminals** (or background processes).
+
+**pnpm** (from repo root):
 
 ```bash
-PORT=3001 pnpm run start:dev
+pnpm run start:api
+pnpm run start:clock
+pnpm run start:worker
 ```
 
-Build for production:
+**yarn** (from repo root):
+
+```bash
+yarn workspace @nest-evlog/api start:dev
+yarn workspace @nest-evlog/clock start:dev
+yarn workspace @nest-evlog/worker start:dev
+```
+
+Clock and worker build shared libs automatically via `prestart:dev` before Nest starts.
+
+Custom ports:
+
+```bash
+PORT=3001 pnpm run start:api
+PORT=3002 pnpm run start:clock   # default
+PORT=3003 pnpm run start:worker  # default
+```
+
+Build all:
 
 ```bash
 pnpm run build
-pnpm run start:prod
 ```
-
-## API reference
-
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET` | `/health` | Health check (excluded from evlog) |
-| `GET` | `/users/:id` | Fetch user by ID |
-| `POST` | `/checkout` | Run full checkout pipeline |
-| `GET` | `/orders/:id` | Fetch order by ID |
-
-### Sample data
-
-**Users**
-
-| ID | Name | Plan |
-|----|------|------|
-| `usr_alice` | Alice Chen | pro |
-| `usr_bob` | Bob Martinez | free |
-| `usr_carol` | Carol Nguyen | enterprise |
-
-**Products (SKU)**
-
-| SKU | Name | Notes |
-|-----|------|-------|
-| `sku_keyboard` | Mechanical Keyboard | In stock |
-| `sku_monitor` | 4K Monitor | In stock |
-| `sku_headset` | Wireless Headset | In stock |
-| `sku_webcam` | HD Webcam | **Out of stock** (triggers 409) |
-
-**Payment test cases**
-
-- `last4: "4242"` — succeeds
-- `last4: "0000"` — declined (402)
 
 ## Testing with curl
 
-Replace the host/port if needed (`localhost:3000` by default, or `3001` if you set `PORT=3001`).
-
-### Health (not logged by evlog)
+### API (`localhost:3000`)
 
 ```bash
+# Health
 curl -s http://localhost:3000/health
-```
 
-### Get user — simple wide event
-
-```bash
+# User lookup
 curl -s http://localhost:3000/users/usr_alice
-```
 
-### Successful checkout — full pipeline wide event
-
-```bash
+# Full checkout (wide event across 6 services)
 curl -s -X POST http://localhost:3000/checkout \
   -H 'Content-Type: application/json' \
   -d '{
@@ -165,97 +137,131 @@ curl -s -X POST http://localhost:3000/checkout \
       "expiryYear": 2030
     }
   }'
-```
 
-Use the returned `orderId` to fetch the order:
-
-```bash
-curl -s http://localhost:3000/orders/ord_REPLACE_ME
-```
-
-### Enterprise user with bulk discount (3 items)
-
-```bash
-curl -s -X POST http://localhost:3000/checkout \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "userId": "usr_carol",
-    "items": [
-      { "sku": "sku_keyboard", "quantity": 1 },
-      { "sku": "sku_monitor", "quantity": 1 },
-      { "sku": "sku_headset", "quantity": 1 }
-    ],
-    "card": {
-      "last4": "4242",
-      "brand": "mastercard",
-      "expiryMonth": 6,
-      "expiryYear": 2028
-    }
-  }'
-```
-
-### Out of stock — structured 409 error in wide event
-
-```bash
+# Out of stock (409 wide event with error)
 curl -s -X POST http://localhost:3000/checkout \
   -H 'Content-Type: application/json' \
   -d '{
     "userId": "usr_bob",
     "items": [{ "sku": "sku_webcam", "quantity": 1 }],
-    "card": {
-      "last4": "4242",
-      "brand": "visa",
-      "expiryMonth": 12,
-      "expiryYear": 2030
-    }
+    "card": { "last4": "4242", "brand": "visa", "expiryMonth": 12, "expiryYear": 2030 }
   }'
 ```
 
-### Payment declined — structured 402 error
+### Clock (`localhost:3002`) — manual enqueue + evlog
+
+Triggers a **HTTP wide event** (clock) and a **job logger wide event** (enqueue), then worker picks up the job.
 
 ```bash
-curl -s -X POST http://localhost:3000/checkout \
+curl -s http://localhost:3002/health
+
+# Enqueue order-sync (watch clock + worker terminals)
+curl -s -X POST http://localhost:3002/trigger/order-sync \
   -H 'Content-Type: application/json' \
-  -d '{
-    "userId": "usr_alice",
-    "items": [{ "sku": "sku_keyboard", "quantity": 1 }],
-    "card": {
-      "last4": "0000",
-      "brand": "visa",
-      "expiryMonth": 12,
-      "expiryYear": 2030
-    }
-  }'
+  -d '{"userId": "usr_alice"}'
+
+# Enqueue inventory alert
+curl -s -X POST http://localhost:3002/trigger/inventory-alert \
+  -H 'Content-Type: application/json' \
+  -d '{"sku": "sku_webcam", "currentStock": 0}'
+
+# Enqueue notification dispatch
+curl -s -X POST http://localhost:3002/trigger/notification \
+  -H 'Content-Type: application/json' \
+  -d '{"userId": "usr_carol"}'
 ```
 
-### User not found — 404
+Crons also enqueue automatically (order-sync every minute, etc.) when clock is running.
+
+### Worker (`localhost:3003`)
 
 ```bash
-curl -s http://localhost:3000/users/usr_unknown
+curl -s http://localhost:3003/health
 ```
 
-Watch the **server terminal** (not the curl output) to see evlog wide events and error context after each request.
+No job triggers here — start worker **before** clock enqueues so jobs are processed immediately. Job wide events appear in the **worker terminal**.
 
-## How logging is wired
+## Example log flow (manual order-sync)
 
-1. **`src/main.ts`** — calls `initLogger({ env: { service: 'nest-evlog' } })` before bootstrap.
-2. **`src/app.module.ts`** — imports `EvlogModule.forRoot({ exclude: ['/health'] })`.
-3. **Services & helpers** — call `useLogger().set({ ... })` to add context at each step.
-4. **`EvlogExceptionFilter`** — registered globally; captures errors into the wide event via `useLogger().error(error)`.
+1. **Clock terminal** — HTTP request completes:
+   ```
+   INFO [nest-evlog-clock] POST /trigger/order-sync 200
+     ├─ route: trigger.order_sync
+     ├─ trigger: manual
+     └─ enqueue: correlationId=corr_xxx jobId=corr_xxx
+   ```
+
+2. **Clock terminal** — enqueue operation (nested `runWithJobLogger`):
+   ```
+   INFO [nest-evlog-clock] enqueue.order_sync
+     ├─ correlationId: corr_xxx
+     ├─ bullmq: jobId=corr_xxx queue=order-sync
+     └─ outcome: success
+   ```
+
+3. **Worker terminal** — job processed:
+   ```
+   INFO [nest-evlog-worker] job.order_sync
+     ├─ correlationId: corr_xxx
+     ├─ job: userId=usr_alice source=manual
+     ├─ steps: fetch_remote_orders → merge_local_state → persist_snapshot
+     └─ outcome: success
+   ```
+
+## API app architecture
+
+E-commerce checkout with nested services (in-memory data):
+
+```
+CheckoutService
+  ├── UsersService
+  ├── InventoryService (+ stock.helper.ts)
+  ├── PricingService (+ discount.helper.ts)
+  ├── PaymentsService (+ card.helper.ts)
+  ├── OrdersService (+ order-status.helper.ts)
+  └── NotificationsService (+ template.helper.ts)
+```
+
+Sample users: `usr_alice`, `usr_bob`, `usr_carol`  
+Sample SKUs: `sku_keyboard`, `sku_monitor`, `sku_headset`, `sku_webcam` (out of stock)
+
+## Environment variables
+
+| Variable | Default | Used by |
+|----------|---------|---------|
+| `PORT` | 3000 / 3002 / 3003 | Each app |
+| `REDIS_HOST` | `localhost` | clock, worker |
+| `REDIS_PORT` | `6379` | clock, worker |
+| `REDIS_URL` | — | clock, worker (overrides host/port) |
 
 ## Scripts
 
 | Command | Description |
 |---------|-------------|
-| `pnpm run start:dev` | Dev server with watch |
-| `pnpm run build` | Compile to `dist/` |
-| `pnpm run start:prod` | Run compiled app |
-| `pnpm run test` | Unit tests |
-| `pnpm run test:e2e` | E2E tests |
-| `pnpm run lint` | ESLint |
+| `pnpm run start:api` | API dev server |
+| `pnpm run start:clock` | Clock dev server |
+| `pnpm run start:worker` | Worker dev server |
+| `pnpm run build` | Build all packages |
+| `pnpm run test` | API unit tests |
+| `pnpm run test:e2e` | API e2e tests |
+
+## Troubleshooting
+
+### `Cannot find module '.../dist/main'`
+
+This happens when TypeScript emits nested paths like `dist/apps/clock/src/main.js` instead of `dist/main.js` (usually caused by `paths` aliases in `tsconfig.build.json`). This repo builds `libs/queues` and `libs/job-logging` to their own `dist/` folders first, then compiles each app with `rootDir: ./src`.
+
+If you hit this after an old build:
+
+```bash
+rm -rf apps/clock/dist apps/worker/dist
+node scripts/build-libs.cjs
+yarn workspace @nest-evlog/clock start:dev
+```
 
 ## Resources
 
 - [evlog documentation](https://www.evlog.dev)
 - [evlog NestJS guide](https://www.evlog.dev/integrate/frameworks/nestjs)
-- [NestJS documentation](https://docs.nestjs.com)
+- [BullMQ](https://docs.bullmq.io/)
+- [NestJS](https://docs.nestjs.com)

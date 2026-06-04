@@ -1,27 +1,41 @@
-# compiled output
-/dist
-/node_modules
-/build
+# Dependencies (root + workspace packages)
+node_modules/
+**/node_modules/
+
+# Compiled output (apps/*, libs/*, root)
+dist/
+build/
+*.tsbuildinfo
+
+# Package managers
+.pnpm-store/
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/sdks
+!.yarn/versions
 
 # Logs
-logs
+logs/
 *.log
 npm-debug.log*
 pnpm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 lerna-debug.log*
-.pnpm-store
+
+# Tests
+coverage/
+.nyc_output/
 
 # OS
 .DS_Store
-
-# Tests
-/coverage
-/.nyc_output
+Thumbs.db
 
 # IDEs and editors
-/.idea
+.idea/
 .project
 .classpath
 .c9/
@@ -29,29 +43,28 @@ lerna-debug.log*
 .settings/
 *.sublime-workspace
 
-# IDE - VSCode
+# VSCode
 .vscode/*
 !.vscode/settings.json
 !.vscode/tasks.json
 !.vscode/launch.json
 !.vscode/extensions.json
 
-# dotenv environment variable files
+# Environment
 .env
-.env.development.local
-.env.test.local
-.env.production.local
-.env.local
+.env.*
+!.env.example
 
-# temp directory
-.temp
-.tmp
+# Temp
+.temp/
+.tmp/
 
-# Runtime data
-pids
+# Runtime
+pids/
 *.pid
 *.seed
 *.pid.lock
 
 # Diagnostic reports (https://nodejs.org/api/report.html)
 report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
+

@@ -1,2 +1,4 @@
 - main purpose of this application it to implement a wide-event logging implementation with evlog (https://www.evlog.dev/integrate/frameworks/nestjs)
 - in this application various nested functions will be created like a service will inject another service and in a function it will call various other helper function and show how we can emit a single wide-event with evlog even for complex scenerios like that
+- monorepo with three apps: `apps/api` (HTTP), `apps/clock` (crons + BullMQ producer), `apps/worker` (BullMQ consumer) — not microservices, shared Redis queues via `libs/queues`
+- clock/worker use `createLogger` through `@nest-evlog/job-logging` (`runWithJobLogger`); api/clock HTTP use `useLogger()` from `evlog/nestjs`
